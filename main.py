@@ -81,3 +81,77 @@ def keitaro_domains():
         return client.list_domains()
     finally:
         client.close()
+        
+@app.get("/api/campaigns/{campaign_id}/offers")
+def get_campaign_offers(campaign_id: int, db: Session = Depends(get_db)):
+    campaign = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    
+    client = KeitaroClient()
+    try:
+        streams = client.list_streams(campaign.keitaro_id)
+        result = []
+        for stream in streams:
+            for offer in stream.get("offers", []):
+                result.append({
+                    "stream_id": stream["id"],
+                    "stream_name": stream.get("name"),
+                    "offer_id": offer["offer_id"],
+                    "state": offer.get("state"),
+                    "share": offer.get("share"),
+                })
+        return result
+    finally:
+        client.close()
+
+
+@app.post("/api/campaigns/{campaign_id}/offers")
+def add_offer(campaign_id: int, payload: dict, db: Session = Depends(get_db)):
+    campaign = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    offer_id = payload.get("offer_id")
+    if not offer_id:
+        raise HTTPException(status_code=400, detail="offer_id is required")
+
+    client = KeitaroClient()
+    try:
+        streams = client.list_streams(campaign.keitaro_id)
+        target = next((s for s in streams if s.get("schema") == "landings"), None)
+        if not target:
+            raise HTTPException(status_code=400, detail="No offer stream found")
+
+        offers = target.get("offers", [])
+        if any(o["offer_id"] == offer_id for o in offers):
+            raise HTTPException(status_code=400, detail="Offer already exists")
+
+        offers.append({"offer_id": offer_id, "share": 100, "state": "active"})
+        client.update_stream(target["id"], {"offers": offers})
+        return {"status": "ok", "offer_id": offer_id}
+    finally:
+        client.close()
+
+
+@app.delete("/api/campaigns/{campaign_id}/offers/{offer_id}")
+def remove_offer(campaign_id: int, offer_id: int, db: Session = Depends(get_db)):
+    campaign = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    client = KeitaroClient()
+    try:
+        streams = client.list_streams(campaign.keitaro_id)
+        target = next((s for s in streams if s.get("schema") == "landings"), None)
+        if not target:
+            raise HTTPException(status_code=400, detail="No offer stream found")
+
+        offers = [o for o in target.get("offers", []) if o["offer_id"] != offer_id]
+        client.update_stream(target["id"], {"offers": offers})
+        return {"status": "ok", "offer_id": offer_id}
+    finally:
+        client.close()
+        
+from fastapi.staticfiles import StaticFiles
+app.mount("/ui", StaticFiles(directory="frontend", html=True), name="frontend")
